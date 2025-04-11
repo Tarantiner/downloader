@@ -20,6 +20,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"time"
 )
@@ -252,16 +253,13 @@ loop:
 								if len(xlis) >= 2 {
 									fType = xlis[len(xlis)-1]
 									tgFileName = fType
-									fid = getFileMd5([]byte(fmt.Sprintf("%s%d", fType, docu.Size)))
 									fileName = fmt.Sprintf("%d---%d---.%s", group.ChannelID, id, xlis[len(xlis)-1])
 								} else {
-									fid = getFileMd5([]byte(fmt.Sprintf("%s%d", fileName, docu.Size)))
 									fileName = fmt.Sprintf("%d---%d---.unknown", group.ChannelID, id)
 								}
 
 							} else {
 								tgFileName = fileName
-								fid = getFileMd5([]byte(fmt.Sprintf("%s%d", fileName, docu.Size)))
 								fileName = fmt.Sprintf("%d---%d---%s", group.ChannelID, id, fileName)
 							}
 
@@ -275,11 +273,6 @@ loop:
 										continue
 									}
 								}
-							}
-
-							if dm.DbIsFileExists(logger, fid) {
-								logger.Infof("已在数据库找到文件记录，跳过：【%s】", fileName)
-								continue
 							}
 
 							var toDb, exists bool
@@ -297,6 +290,28 @@ loop:
 								logger.Infof("同名文件已下载过，跳过：%s", fileName)
 								toDb = true
 							} else {
+								a, err := client.API().UploadGetFile(ctx, &tg.UploadGetFileRequest{
+									Location: docu.AsInputDocumentFileLocation(),
+									Offset:   0,
+									Limit:    4096,
+								})
+								if err != nil {
+									logger.Warningf("下载片段失败")
+									continue
+								}
+								if b, ok := a.(*tg.UploadFile); ok {
+									b.Bytes = append(b.Bytes, []byte(fmt.Sprintf("%d", docu.Size))...)
+									fid = getFileMd5(b.Bytes)
+								} else {
+									logger.Infof("类型异常：%v", reflect.TypeOf(a))
+									continue
+								}
+
+								if dm.DbIsFileExists(logger, fid) {
+									logger.Infof("已在数据库找到文件记录，跳过：【%s】", fileName)
+									continue
+								}
+
 								logger.Infof("正在下载群频%s第%d消息文件：【%s】 大小：【%.1fMB】", username, id, fileName, mSize)
 								dl := downloader.NewDownloader()
 								for i := 0; i < 3; i++ {

@@ -300,7 +300,7 @@ loop:
 								logger.Infof("正在下载群频%s第%d消息文件：【%s】 大小：【%.1fMB】", username, id, fileName, mSize)
 								dl := downloader.NewDownloader()
 								for i := 0; i < 3; i++ {
-									_, err = dl.Download(client.API(), docu.AsInputDocumentFileLocation()).WithThreads(12).ToPath(ctx, filePath)
+									_, err = dl.Download(client.API(), docu.AsInputDocumentFileLocation()).WithThreads(config.Download.Threads).ToPath(ctx, filePath)
 									if err != nil {
 										logger.Warningf("下载群频%s第%d消息文件：【%s】 大小：【%.1fMB】失败|%s", username, id, fileName, mSize, err.Error())
 										if strings.Contains(err.Error(), "connection dead") {
@@ -311,6 +311,10 @@ loop:
 										toDb = true
 										break
 									}
+								}
+								if !toDb {
+									os.Remove(filePath)
+									logger.Infof("多次下载失败")
 								}
 							}
 							if toDb {

@@ -55,13 +55,14 @@ func LoadConfig(config *Config, path string) error {
 		config.Download.Threads = 4
 	}
 	lis := strings.Split(config.Download.DownloadTypes, ",")
-	{
-		mp := make(map[string]struct{})
-		for _, v := range lis {
-			mp[v] = struct{}{}
+	mp := make(map[string]struct{})
+	for _, v := range lis {
+		if v == "" {
+			continue
 		}
-		config.Download.Dtypes = mp
+		mp[v] = struct{}{}
 	}
+	config.Download.Dtypes = mp
 
 	// login
 	if config.Login.APIID == -1 {

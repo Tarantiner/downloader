@@ -118,23 +118,6 @@ func reverse(s []tg.MessageClass) {
 	}
 }
 
-type GroupInfo struct {
-	ID    int64
-	Name  string
-	Title string
-	Desc  string
-	Date  int
-	Count int
-	Flag  int8
-}
-
-type UserInfo struct {
-	ID   int64
-	Name string
-	Nick string
-	Desc string
-}
-
 func getFileMd5(s []byte) string {
 	hasher := md5.New()
 	hasher.Write(s)

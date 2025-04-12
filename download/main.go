@@ -41,7 +41,7 @@ var (
 func init() {
 	flag.StringVar(&username, "name", "", "目标群频名")
 	flag.Int64Var(&gid, "id", 0, "群ID，常用于私密群")
-	flag.BoolVar(&export, "export", false, "目标群频名")
+	flag.BoolVar(&export, "export", false, "是否导出该会话的群频信息true/false")
 	flag.Parse()
 
 	if !export && gid == 0 && username == "" {

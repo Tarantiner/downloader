@@ -5,6 +5,7 @@ import (
 	"crypto/md5"
 	cm "download/common"
 	dm "download/db"
+	"encoding/csv"
 	"encoding/hex"
 	"errors"
 	"flag"
@@ -20,6 +21,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -32,13 +34,18 @@ var (
 	ctx                  = context.Background()
 	client               *telegram.Client
 	username             string
+	gid                  int64
+	export               bool
 )
 
 func init() {
 	flag.StringVar(&username, "name", "", "目标群频名")
+	flag.Int64Var(&gid, "id", 0, "群ID，常用于私密群")
+	flag.BoolVar(&export, "export", false, "目标群频名")
 	flag.Parse()
-	if username == "" {
-		panic(fmt.Errorf("群频名为空"))
+
+	if !export && gid == 0 && username == "" {
+		panic(fmt.Errorf("运行download.exe --help查看使用方法，注意同时只能支持一个参数！"))
 	}
 	// 加载配置
 	config = new(cm.Config)
@@ -70,6 +77,14 @@ func init() {
 	}
 
 	dm.DbInit(config.DB.DBPath)
+}
+
+type GroupInfo struct {
+	ID    int64
+	Name  string
+	Title string
+	Count int
+	Hash  int64
 }
 
 type FileSessionStorage struct {
@@ -118,6 +133,44 @@ func reverse(s []tg.MessageClass) {
 	}
 }
 
+func getDialogs(ctx context.Context, client *telegram.Client) map[int64]*GroupInfo {
+	offset := 0
+	limit := 100
+	mp := make(map[int64]*GroupInfo)
+	for {
+		resp, err := client.API().MessagesGetDialogs(ctx, &tg.MessagesGetDialogsRequest{
+			OffsetID:   offset,
+			Limit:      limit,
+			OffsetPeer: &tg.InputPeerEmpty{},
+		})
+		if err != nil {
+			panic(fmt.Sprintf("遍历对话框失败: %s", err.Error()))
+		}
+		if resp == nil {
+			break
+		}
+		if rsp, ok := resp.(*tg.MessagesDialogs); ok {
+			for _, c := range rsp.Chats {
+				if chat, ok := c.(*tg.Channel); ok {
+					mp[chat.ID] = &GroupInfo{
+						ID:    chat.ID,
+						Name:  chat.Username,
+						Title: chat.Title,
+						Count: chat.ParticipantsCount,
+						Hash:  chat.AccessHash,
+					}
+				}
+			}
+			if len(rsp.Chats) < limit {
+				break
+			}
+		}
+		offset = offset + limit
+		time.Sleep(time.Millisecond * 800)
+	}
+	return mp
+}
+
 func getFileMd5(s []byte) string {
 	hasher := md5.New()
 	hasher.Write(s)
@@ -125,7 +178,7 @@ func getFileMd5(s []byte) string {
 	return md5Str2
 }
 
-func getGroupInfo(ctx context.Context, client *telegram.Client, username string) *tg.InputChannel {
+func getGroupInfo(ctx context.Context, client *telegram.Client) *tg.InputChannel {
 	resolved, err := client.API().ContactsResolveUsername(ctx, &tg.ContactsResolveUsernameRequest{Username: username})
 	if err != nil {
 		logger.Warningf("failed to resolve username: %s", err.Error())
@@ -155,22 +208,36 @@ func getGroupInfo(ctx context.Context, client *telegram.Client, username string)
 	return nil
 }
 
-func getGroupMessage(ctx context.Context, client *telegram.Client, username string) {
-	logger.Infof("正在处理群频：%s", username)
-	group := getGroupInfo(ctx, client, username)
-	if group == nil {
-		return
+func getGroupMessage(ctx context.Context, client *telegram.Client) {
+	var peer *tg.InputPeerChannel
+	if username != "" {
+		group := getGroupInfo(ctx, client)
+		if group == nil {
+			return
+		}
+		peer = &tg.InputPeerChannel{
+			ChannelID:  group.ChannelID,
+			AccessHash: group.AccessHash,
+		}
+		gid = group.ChannelID
+		logger.Infof("正在处理群频：%s", username)
+	} else if gid != 0 {
+		groupData := getDialogs(ctx, client)
+		if info, ok := groupData[gid]; ok {
+			peer = &tg.InputPeerChannel{
+				ChannelID:  gid,
+				AccessHash: info.Hash,
+			}
+			logger.Infof("正在处理群频：%d", gid)
+		} else {
+			logger.Warningf("会话%s找不到群频：%d", session, gid)
+			return
+		}
 	}
+
 	// 获取聊天历史记录
-	//chatID := group.ChannelID // 替换为目标聊天 ID
 	offset := 1 // 从第 20 条消息开始
 	limit := 3  // 偏移量更小，减少文件引用失效情况
-
-	peer := &tg.InputPeerChannel{
-		ChannelID:  group.ChannelID,
-		AccessHash: group.AccessHash,
-	}
-
 	var count int
 loop:
 	for {
@@ -236,16 +303,16 @@ loop:
 									fType = xlis[len(xlis)-1]
 									tgFileName = fType
 									fid = getFileMd5([]byte(fmt.Sprintf("%s%d", fType, docu.Size)))
-									fileName = fmt.Sprintf("%d---%d---.%s", group.ChannelID, id, xlis[len(xlis)-1])
+									fileName = fmt.Sprintf("%d---%d---.%s", gid, id, xlis[len(xlis)-1])
 								} else {
 									fid = getFileMd5([]byte(fmt.Sprintf("%s%d", fileName, docu.Size)))
-									fileName = fmt.Sprintf("%d---%d---.unknown", group.ChannelID, id)
+									fileName = fmt.Sprintf("%d---%d---.unknown", gid, id)
 								}
 
 							} else {
 								tgFileName = fileName
 								fid = getFileMd5([]byte(fmt.Sprintf("%s%d", fileName, docu.Size)))
-								fileName = fmt.Sprintf("%d---%d---%s", group.ChannelID, id, fileName)
+								fileName = fmt.Sprintf("%d---%d---%s", gid, id, fileName)
 							}
 
 							suffixLis := strings.Split(fileName, ".")
@@ -305,7 +372,7 @@ loop:
 							if toDb {
 								file := dm.TgFile{
 									Fid:   fid,
-									Gid:   group.ChannelID,
+									Gid:   gid,
 									Gname: username,
 									Mid:   id,
 									Fname: tgFileName,
@@ -337,6 +404,29 @@ loop:
 
 		offset = id + 1
 		time.Sleep(time.Millisecond * 800)
+	}
+}
+
+func exportData(ctx context.Context, client *telegram.Client) {
+	groupData := getDialogs(ctx, client)
+
+	if len(groupData) > 0 {
+		fpath := fmt.Sprintf("./%s_groups.csv", session)
+		ff, err := os.OpenFile(fpath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0755)
+		if err != nil {
+			panic(err)
+		}
+		defer ff.Close()
+		cv := csv.NewWriter(ff)
+		cv.UseCRLF = true
+		cv.Write([]string{"ID", "Name", "Title", "Count"})
+		for _, group := range groupData {
+			cv.Write([]string{strconv.Itoa(int(group.ID)), group.Name, group.Title, strconv.Itoa(int(group.Count))})
+		}
+		cv.Flush()
+		fmt.Printf("已导出%d个群频信息>>>%s\n", len(groupData), fpath)
+	} else {
+		fmt.Println("未找到用户对话框")
 	}
 }
 
@@ -426,9 +516,14 @@ func main() {
 		}
 		logger.Infof("Logged in as: %s (%d)", self.Username, self.ID)
 
+		if export {
+			exportData(ctx, client)
+			return nil
+		}
+
 		//username := "BabukLockerRaas" // 替换为你要查找的群组用户名
 		//username := "jjifei" // 替换为你要查找的群组用户名
-		getGroupMessage(ctx, client, username)
+		getGroupMessage(ctx, client)
 
 		return nil
 	}); err != nil {

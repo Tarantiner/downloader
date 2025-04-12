@@ -322,12 +322,12 @@ loop:
 								if len(config.Download.Dtypes) > 0 {
 									// 下载文件类型过滤
 									if _, ok := config.Download.Dtypes[s]; !ok {
-										logger.Infof("过滤%s类型文件%.1fMB", s, mSize)
+										logger.Infof("过滤%s类型文件%.2fMB", s, mSize)
 										continue
 									}
 								}
 								if _, ok := config.Download.EDtypes[s]; ok {
-									logger.Infof("过滤%s类型文件%.1fMB", s, mSize)
+									logger.Infof("过滤%s类型文件%.2fMB", s, mSize)
 									continue
 								}
 							}
@@ -341,23 +341,23 @@ loop:
 							filePath := filepath.Join(config.Download.DataDir, fileName)
 							ff, _ := os.Stat(filePath)
 							if ff != nil {
-								rate := float64(ff.Size() / docu.Size)
+								rate := float64(ff.Size()) / float64(docu.Size) * 100
 								if rate >= 0.95 {
 									exists = true
 								} else {
-									logger.Infof("本地存在的文件%s不完整：%.1f，程序重新下载", filePath, rate)
+									logger.Infof("本地存在的文件%s不完整：%.2f%%，程序重新下载", filePath, rate)
 								}
 							}
 							if exists {
 								logger.Infof("同名文件已下载过，跳过：%s", fileName)
 								toDb = true
 							} else {
-								logger.Infof("正在下载群频%s第%d消息文件：【%s】 大小：【%.1fMB】", username, id, fileName, mSize)
+								logger.Infof("正在下载群频%s第%d消息文件：【%s】 大小：【%.2fMB】", username, id, fileName, mSize)
 								dl := downloader.NewDownloader()
 								for i := 0; i < 3; i++ {
 									_, err = dl.Download(client.API(), docu.AsInputDocumentFileLocation()).WithThreads(config.Download.Threads).ToPath(ctx, filePath)
 									if err != nil {
-										logger.Warningf("下载群频%s第%d消息文件：【%s】 大小：【%.1fMB】失败|%s", username, id, fileName, mSize, err.Error())
+										logger.Warningf("下载群频%s第%d消息文件：【%s】 大小：【%.2fMB】失败|%s", username, id, fileName, mSize, err.Error())
 										logger.Infof("下载异常，正在重试%d次...", i+1)
 									} else {
 										toDb = true

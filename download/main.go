@@ -119,23 +119,6 @@ func reverse(s []tg.MessageClass) {
 	}
 }
 
-type GroupInfo struct {
-	ID    int64
-	Name  string
-	Title string
-	Desc  string
-	Date  int
-	Count int
-	Flag  int8
-}
-
-type UserInfo struct {
-	ID   int64
-	Name string
-	Nick string
-	Desc string
-}
-
 func getFileMd5(s []byte) string {
 	hasher := md5.New()
 	hasher.Write(s)
@@ -269,9 +252,13 @@ loop:
 								if len(config.Download.Dtypes) > 0 {
 									// 下载文件类型过滤
 									if _, ok := config.Download.Dtypes[s]; !ok {
-										//logger.Infof("过滤%s类型文件%.1f", s, mSize)
+										logger.Infof("过滤%s类型文件%.1fMB", s, mSize)
 										continue
 									}
+								}
+								if _, ok := config.Download.EDtypes[s]; ok {
+									logger.Infof("过滤%s类型文件%.1fMB", s, mSize)
+									continue
 								}
 							}
 

@@ -8,13 +8,15 @@ import (
 
 type Config struct {
 	Download struct {
-		APIID         int    `ini:"apiID"`
-		APIHash       string `ini:"apiHash"`
-		SessionDir    string `ini:"sessionDir"`
-		DataDir       string `ini:"dataDir"`
-		Threads       int    `ini:"threads"`
-		DownloadTypes string `ini:"downloadTypes"`
-		Dtypes        map[string]struct{}
+		APIID                int    `ini:"apiID"`
+		APIHash              string `ini:"apiHash"`
+		SessionDir           string `ini:"sessionDir"`
+		DataDir              string `ini:"dataDir"`
+		Threads              int    `ini:"threads"`
+		DownloadTypes        string `ini:"downloadTypes"`
+		ExcludeDownloadTypes string `ini:"excludeDownloadTypes"`
+		Dtypes               map[string]struct{}
+		EDtypes              map[string]struct{}
 	} `ini:"download"`
 
 	Login struct {
@@ -55,14 +57,24 @@ func LoadConfig(config *Config, path string) error {
 		config.Download.Threads = 4
 	}
 	lis := strings.Split(config.Download.DownloadTypes, ",")
-	mp := make(map[string]struct{})
+	lis2 := strings.Split(config.Download.ExcludeDownloadTypes, ",")
+	mp1 := make(map[string]struct{})
 	for _, v := range lis {
 		if v == "" {
 			continue
 		}
-		mp[v] = struct{}{}
+		mp1[v] = struct{}{}
 	}
-	config.Download.Dtypes = mp
+	config.Download.Dtypes = mp1
+
+	mp2 := make(map[string]struct{})
+	for _, v := range lis2 {
+		if v == "" {
+			continue
+		}
+		mp2[v] = struct{}{}
+	}
+	config.Download.EDtypes = mp2
 
 	// login
 	if config.Login.APIID == -1 {

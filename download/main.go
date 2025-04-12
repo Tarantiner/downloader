@@ -235,10 +235,15 @@ func getGroupMessage(ctx context.Context, client *telegram.Client) {
 			return
 		}
 	}
+	groupDir := filepath.Join(config.Download.DataDir, strconv.Itoa(int(gid)))
+	err := os.MkdirAll(groupDir, 0755)
+	if err != nil {
+		panic(fmt.Sprintf("创建存储目录%s失败：%s", groupDir, err.Error()))
+	}
 
 	// 获取聊天历史记录
 	offset := 1
-	limit := 3
+	limit := 100
 	var count int
 loop:
 	for {
@@ -313,6 +318,37 @@ loop:
 								fileName = fmt.Sprintf("%d---%d---%s", gid, id, fileName)
 							}
 
+							// 文件大小过滤
+							if config.Download.MinSize != -1 {
+								if docu.Size < config.Download.MinSize*1024*1024 {
+									logger.Infof("文件太小：【%s】：【%.2fMB】", fileName, mSize)
+									continue
+								}
+							}
+							if config.Download.MaxSize != -1 {
+								if docu.Size > config.Download.MaxSize*1024*1024 {
+									logger.Infof("文件太大：【%s】：【%.2fMB】", fileName, mSize)
+									continue
+								}
+							}
+
+							// 文件名过滤
+							if len(config.Download.FMatches) > 0 {
+								msg := strings.ToLower(tgMsg.Message)
+								var match bool
+								for s, _ := range config.Download.FMatches {
+									if strings.Contains(msg, s) || strings.Contains(fileName, s) {
+										match = true
+										break
+									}
+								}
+								if !match {
+									logger.Infof("文件名或文本not match：【%s】", fileName)
+									continue
+								}
+							}
+
+							// 文件类型过滤
 							suffixLis := strings.Split(fileName, ".")
 							if len(suffixLis) >= 2 {
 								s := suffixLis[len(suffixLis)-1]
@@ -329,75 +365,76 @@ loop:
 								}
 							}
 
-							var toDb, exists bool
-							filePath := filepath.Join(config.Download.DataDir, fileName)
+							// 同名文件过滤
+							filePath := filepath.Join(groupDir, fileName)
 							ff, _ := os.Stat(filePath)
 							if ff != nil {
-								rate := float64(ff.Size()) / float64(docu.Size) * 100
-								if rate >= 0.95 {
-									exists = true
+								if ff.Size() == docu.Size {
+									logger.Infof("同名文件已下载过，跳过：%s", fileName)
+									continue
 								} else {
+									rate := float64(ff.Size()) / float64(docu.Size) * 100
 									logger.Infof("本地存在的文件%s不完整：%.2f，程序重新下载", filePath, rate)
 								}
 							}
-							if exists {
-								logger.Infof("同名文件已下载过，跳过：%s", fileName)
-								toDb = true
+
+							a, err := client.API().UploadGetFile(ctx, &tg.UploadGetFileRequest{
+								Location: docu.AsInputDocumentFileLocation(),
+								Offset:   0, // 必须4096整数倍
+								Limit:    4096,
+							})
+							if err != nil {
+								logger.Warningf("下载片段失败")
+								continue
+							}
+							if b, ok := a.(*tg.UploadFile); ok {
+								b.Bytes = append(b.Bytes, []byte(fmt.Sprintf("%d", docu.Size))...)
+								fid = getFileMd5(b.Bytes)
 							} else {
-								a, err := client.API().UploadGetFile(ctx, &tg.UploadGetFileRequest{
-									Location: docu.AsInputDocumentFileLocation(),
-									Offset:   0,
-									Limit:    4096,
-								})
+								logger.Infof("类型异常：%v", reflect.TypeOf(a))
+								continue
+							}
+
+							if dm.DbIsFileExists(logger, fid) {
+								logger.Infof("已在数据库找到文件记录，跳过：【%s】", fileName)
+								continue
+							}
+
+							logger.Infof("正在下载群频%s第%d消息文件：【%s】 大小：【%.2fMB】", username, id, fileName, mSize)
+							dl := downloader.NewDownloader()
+							var finish bool
+							for i := 0; i < 3; i++ {
+								_, err = dl.Download(client.API(), docu.AsInputDocumentFileLocation()).WithThreads(config.Download.Threads).ToPath(ctx, filePath)
 								if err != nil {
-									logger.Warningf("下载片段失败")
-									continue
-								}
-								if b, ok := a.(*tg.UploadFile); ok {
-									b.Bytes = append(b.Bytes, []byte(fmt.Sprintf("%d", docu.Size))...)
-									fid = getFileMd5(b.Bytes)
+									logger.Warningf("下载群频%s第%d消息文件：【%s】 大小：【%.2fMB】失败|%s", username, id, fileName, mSize, err.Error())
+									logger.Infof("下载异常，正在重试%d次...", i+1)
 								} else {
-									logger.Infof("类型异常：%v", reflect.TypeOf(a))
-									continue
+									finish = true
+									break
 								}
-
-								if dm.DbIsFileExists(logger, fid) {
-									logger.Infof("已在数据库找到文件记录，跳过：【%s】", fileName)
-									continue
-								}
-
-								logger.Infof("正在下载群频%s第%d消息文件：【%s】 大小：【%.2fMB】", username, id, fileName, mSize)
-								dl := downloader.NewDownloader()
-								for i := 0; i < 3; i++ {
-									_, err = dl.Download(client.API(), docu.AsInputDocumentFileLocation()).WithThreads(config.Download.Threads).ToPath(ctx, filePath)
-									if err != nil {
-										logger.Warningf("下载群频%s第%d消息文件：【%s】 大小：【%.2fMB】失败|%s", username, id, fileName, mSize, err.Error())
-										logger.Infof("下载异常，正在重试%d次...", i+1)
-									} else {
-										toDb = true
-										break
-									}
-								}
-								if !toDb {
+							}
+							if !finish {
+								f, _ := os.Stat(filePath)
+								if f != nil {
 									os.Remove(filePath)
-									logger.Infof("多次下载失败")
 								}
+								logger.Infof("多次下载失败")
+								continue
 							}
-							if toDb {
-								file := dm.TgFile{
-									Fid:   fid,
-									Gid:   gid,
-									Gname: username,
-									Mid:   id,
-									Fname: tgFileName,
-									Dname: fileName,
-									Fpath: filePath,
-									Fsize: docu.Size,
-									Ftime: tm,
-									Msg:   tgMsg.Message,
-								}
-								dm.DbNewFile(logger, &file)
+
+							file := dm.TgFile{
+								Fid:   fid,
+								Gid:   gid,
+								Gname: username,
+								Mid:   id,
+								Fname: tgFileName,
+								Dname: fileName,
+								Fpath: filePath,
+								Fsize: docu.Size,
+								Ftime: tm,
+								Msg:   tgMsg.Message,
 							}
+							dm.DbNewFile(logger, &file)
 						}
 					}
 				case *tg.MessageService: // 比如某人加入离开群组

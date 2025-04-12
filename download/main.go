@@ -135,7 +135,7 @@ func reverse(s []tg.MessageClass) {
 
 func getDialogs(ctx context.Context, client *telegram.Client) map[int64]*GroupInfo {
 	offset := 0
-	limit := 3
+	limit := 100
 	mp := make(map[int64]*GroupInfo)
 	for {
 		resp, err := client.API().MessagesGetDialogs(ctx, &tg.MessagesGetDialogsRequest{
@@ -166,7 +166,7 @@ func getDialogs(ctx context.Context, client *telegram.Client) map[int64]*GroupIn
 			}
 		}
 		offset = offset + limit
-		time.Sleep(time.Millisecond * 800)
+		time.Sleep(time.Second * 10)
 	}
 	return mp
 }
@@ -236,8 +236,8 @@ func getGroupMessage(ctx context.Context, client *telegram.Client) {
 	}
 
 	// 获取聊天历史记录
-	offset := 1  // 从第 20 条消息开始
-	limit := 100 // 偏移量更小，减少文件引用失效情况
+	offset := 1 // 从第 20 条消息开始
+	limit := 3  // 偏移量更小，减少文件引用失效情况
 	var count int
 loop:
 	for {

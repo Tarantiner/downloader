@@ -347,6 +347,10 @@ loop:
 							if ff != nil {
 								// 存在文件
 								lastSize = ff.Size()
+								if lastSize == docu.Size {
+									logger.Infof("本地文件已存在，且大小相同，跳过：【%s】", fileName)
+									continue
+								}
 								if lastSize%4096 != 0 {
 									lastSize = 0
 									logger.Printf("群频%s第%d消息，原文件已损坏，无法继续下载文件，开始重新下载：【%s】", username, id, fileName)

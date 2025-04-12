@@ -251,12 +251,17 @@ loop:
 							suffixLis := strings.Split(fileName, ".")
 							if len(suffixLis) >= 2 {
 								s := suffixLis[len(suffixLis)-1]
+								//fmt.Printf("【%s】\n", s)
 								if len(config.Download.Dtypes) > 0 {
 									// 下载文件类型过滤
 									if _, ok := config.Download.Dtypes[s]; !ok {
-										//logger.Infof("过滤%s类型文件%.1f", s, mSize)
+										logger.Infof("过滤%s类型文件%.1fMB", s, mSize)
 										continue
 									}
+								}
+								if _, ok := config.Download.EDtypes[s]; ok {
+									logger.Infof("过滤%s类型文件%.1fMB", s, mSize)
+									continue
 								}
 							}
 

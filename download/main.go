@@ -355,7 +355,7 @@ loop:
 									lastSize = 0
 									logger.Printf("群频%s第%d消息，原文件已损坏，无法继续下载文件，开始重新下载：【%s】", username, id, fileName)
 								} else {
-									rate := float64(lastSize / docu.Size * 100)
+									rate := float64(lastSize) / float64(docu.Size) * 100
 									logger.Printf("群频%s第%d消息，原文件进度%.2f%%，正在继续下载：【%s】", username, id, rate, fileName)
 								}
 							} else {

@@ -164,7 +164,7 @@ func getGroupMessage(ctx context.Context, client *telegram.Client, username stri
 	// 获取聊天历史记录
 	//chatID := group.ChannelID // 替换为目标聊天 ID
 	offset := 1 // 从第 20 条消息开始
-	limit := 100
+	limit := 3  // 偏移量更小，减少文件引用失效情况
 
 	peer := &tg.InputPeerChannel{
 		ChannelID:  group.ChannelID,
@@ -291,10 +291,7 @@ loop:
 									_, err = dl.Download(client.API(), docu.AsInputDocumentFileLocation()).WithThreads(config.Download.Threads).ToPath(ctx, filePath)
 									if err != nil {
 										logger.Warningf("下载群频%s第%d消息文件：【%s】 大小：【%.1fMB】失败|%s", username, id, fileName, mSize, err.Error())
-										if strings.Contains(err.Error(), "connection dead") {
-											logger.Infof("网络异常，正在重试...")
-											continue
-										}
+										logger.Infof("下载异常，正在重试%d次...", i+1)
 									} else {
 										toDb = true
 										break

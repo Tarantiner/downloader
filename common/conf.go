@@ -12,7 +12,7 @@ type Config struct {
 		APIHash              string `ini:"apiHash"`
 		SessionDir           string `ini:"sessionDir"`
 		DataDir              string `ini:"dataDir"`
-		Threads              int    `ini:"threads"`
+		Threads              int    `ini:"threads"` // 此版本不支持多线程，为无用参数
 		DownloadTypes        string `ini:"downloadTypes"`
 		ExcludeDownloadTypes string `ini:"excludeDownloadTypes"`
 		Dtypes               map[string]struct{}

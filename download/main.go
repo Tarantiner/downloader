@@ -36,12 +36,20 @@ var (
 	username             string
 	gid                  int64
 	export               bool
+	startMsgID           int
+	endMsgID             int
+	maxRetry             int
+	perSize              int
 )
 
 func init() {
 	flag.StringVar(&username, "name", "", "目标群频名")
 	flag.Int64Var(&gid, "id", 0, "群ID，常用于私密群")
 	flag.BoolVar(&export, "export", false, "是否导出该会话的群频信息true/false")
+	flag.IntVar(&startMsgID, "s", 1, "从哪条消息ID开始处理，需>=1，从该条消息开始采集")
+	flag.IntVar(&endMsgID, "e", 0, "处理到哪条消息ID，默认0不限制，不会采集该条消息")
+	flag.IntVar(&maxRetry, "t", 5, "遍历聊天和下载文件出现异常的重试次数")
+	flag.IntVar(&perSize, "p", 3, "每次请求多少条聊天1-100，若下载文件大，建议设小，减少文件引用过期情况")
 	flag.Parse()
 
 	if !export && gid == 0 && username == "" {
@@ -54,13 +62,13 @@ func init() {
 	}
 
 	// 创建目录（包括所有必要的父目录）
-	err := os.MkdirAll(config.Download.SessionDir, 0755) // 0755是目录权限
+	err := os.MkdirAll(config.Download.SessionDir, 0644) // 0644是目录权限
 	if err != nil {
 		// 处理错误（通常只有权限问题才会导致错误）
 		panic(fmt.Sprintf("创建session目录失败|%s|%v", config.Download.SessionDir, err))
 	}
 
-	err = os.MkdirAll(config.Download.DataDir, 0755) // 0755是目录权限
+	err = os.MkdirAll(config.Download.DataDir, 0644) // 0644是目录权限
 	if err != nil {
 		// 处理错误（通常只有权限问题才会导致错误）
 		panic(fmt.Sprintf("创建下载目录失败|%s|%v", config.Download.DataDir, err))
@@ -181,12 +189,11 @@ func getFileMd5(s []byte) string {
 func getGroupInfo(ctx context.Context, client *telegram.Client) *tg.InputChannel {
 	resolved, err := client.API().ContactsResolveUsername(ctx, &tg.ContactsResolveUsernameRequest{Username: username})
 	if err != nil {
-		logger.Warningf("failed to resolve username: %s", err.Error())
+		logger.Errorf("failed to resolve username: %s|%s", username, err.Error())
 		var rpcErr *tgerr.Error
 		if errors.As(err, &rpcErr) {
-			// 检查错误码是否为 420 (FLOOD_WAIT)
 			if rpcErr.Code == 400 {
-				logger.Warningf("无效名：%s", username)
+				logger.Errorf("无效名：%s", username)
 			}
 		}
 		return nil
@@ -202,7 +209,7 @@ func getGroupInfo(ctx context.Context, client *telegram.Client) *tg.InputChannel
 		}
 		return group
 	default:
-		logger.Warningf("%s非群频: %T", username, peer)
+		logger.Errorf("%s非群频: %T", username, peer)
 	}
 
 	return nil
@@ -230,63 +237,70 @@ func getGroupMessage(ctx context.Context, client *telegram.Client) {
 			}
 			logger.Infof("正在处理群频：%d", gid)
 		} else {
-			logger.Warningf("会话%s找不到群频：%d", session, gid)
+			logger.Errorf("会话%s找不到群频：%d", session, gid)
 			return
 		}
 	}
 
 	// 获取聊天历史记录
-	offset := 1 // 从第 20 条消息开始
-	limit := 3  // 偏移量更小，减少文件引用失效情况
-	var count int
+	offset := startMsgID
+	logger.Infof("当前从消息ID：%d开始采集", offset)
+	var mtries int
 loop:
 	for {
 		// 调用 ChannelsGetHistory 方法
 		history, err := client.API().MessagesGetHistory(ctx, &tg.MessagesGetHistoryRequest{
 			Peer:       peer,
-			OffsetID:   offset, // 从最新消息开始
-			OffsetDate: 0,      // 不需要按日期偏移
-			AddOffset:  -limit, // 设置偏移量
-			Limit:      limit,  // 每次获取的消息数量
-			MaxID:      0,      // 最大消息 ID（0 表示不限制）
-			MinID:      0,      // 最小消息 ID（0 表示不限制）
+			OffsetID:   offset,   // 从最新消息开始
+			OffsetDate: 0,        // 不需要按日期偏移
+			AddOffset:  -perSize, // 设置偏移量
+			Limit:      perSize,  // 每次获取的消息数量
+			MaxID:      0,        // 最大消息 ID（0 表示不限制）
+			MinID:      0,        // 最小消息 ID（0 表示不限制）
 			Hash:       0,
 		})
 		if err != nil {
+			if mtries >= maxRetry {
+				logger.Errorf("遍历消息【%s:%d】多次失败，结束", username, offset)
+				break
+			}
 			var rpcErr *tgerr.Error
 			if errors.As(err, &rpcErr) {
-				// 检查错误码是否为 420 (FLOOD_WAIT)
 				if rpcErr.Code == 420 {
-					logger.Infof("遍历消息需要等待|%d", rpcErr.Argument)
-					time.Sleep(time.Second * time.Duration(rpcErr.Argument))
-					continue
+					logger.Infof("遍历消息需要等待|%d|waitting...", rpcErr.Argument)
+					time.Sleep(time.Second * time.Duration(rpcErr.Argument+2))
+					client.Self(ctx)
 				} else {
-					logger.Fatalf("Failed to get channel history: %s", err.Error())
+					time.Sleep(time.Second * 1)
+					logger.Warningf("遍历消息失败：%d|%s，重试中... (%d/%d)", rpcErr.Code, err.Error(), mtries+1, maxRetry)
 				}
 			} else {
-				logger.Fatalf("Failed to get channel history: %s", err.Error())
+				time.Sleep(time.Second * 1)
+				logger.Warningf("遍历消息失败：%s，重试中... (%d/%d)", err.Error(), mtries+1, maxRetry)
 			}
+			mtries++
+			continue
 		}
+		mtries = 0
 
 		// 处理返回的消息
 		var id int
 		switch resp := history.(type) {
 		case *tg.MessagesChannelMessages:
 			if len(resp.Messages) == 0 {
+				logger.Infof("群频：%s已处理完成", username)
 				break loop
 			}
 			reverse(resp.Messages)
 			for _, msg := range resp.Messages {
-				count++
 				switch tgMsg := msg.(type) {
 				case *tg.Message:
 					tm := time.Unix(int64(tgMsg.Date), 0).Format(time.DateTime)
 					id = tgMsg.ID
-
-					//if id != 366 {
-					//	continue
-					//}
-
+					if endMsgID > 0 && id >= endMsgID {
+						logger.Infof("已处理到目标消息ID：%d", endMsgID)
+						break loop
+					}
 					if md, ok := tgMsg.Media.(*tg.MessageMediaDocument); ok {
 						if docu, ok := md.Document.(*tg.Document); ok {
 							mSize := float64(docu.Size) / 1024 / 1024
@@ -330,6 +344,7 @@ loop:
 									}
 								}
 								if _, ok := config.Download.EDtypes[s]; ok {
+									// 过滤不下载的文件类型
 									logger.Infof("过滤%s类型文件%.2fMB", s, mSize)
 									continue
 								}
@@ -341,6 +356,7 @@ loop:
 							}
 
 							var lastSize int64
+							var isBlank, isOK bool
 							filePath := filepath.Join(config.Download.DataDir, fileName)
 							ff, _ := os.Stat(filePath)
 
@@ -349,60 +365,108 @@ loop:
 								lastSize = ff.Size()
 								if lastSize == docu.Size {
 									logger.Infof("本地文件已存在，且大小相同，跳过：【%s】", fileName)
-									continue
-								}
-								if lastSize%4096 != 0 {
+									isOK = true
+								} else if lastSize%4096 != 0 {
 									lastSize = 0
-									logger.Printf("群频%s第%d消息，原文件已损坏，无法继续下载文件，开始重新下载：【%s】", username, id, fileName)
+									logger.Infof("群频%s第%d消息，原文件已损坏，无法继续下载文件，开始重新下载：【%s】", username, id, fileName)
+									err = os.Remove(filePath)
+									if err != nil {
+										logger.Errorf("删除旧文件【%s】失败：%s", filePath, err.Error())
+										continue
+									} else {
+										isBlank = true
+										logger.Infof("已删除损坏文件：【%s】", filePath)
+									}
 								} else {
 									rate := float64(lastSize) / float64(docu.Size) * 100
-									logger.Printf("群频%s第%d消息，原文件进度%.2f%%，正在继续下载：【%s】", username, id, rate, fileName)
+									logger.Infof("群频%s第%d消息，原文件进度%.2f%%，正在继续下载：【%s】", username, id, rate, fileName)
 								}
 							} else {
 								// 不存在文件
+								isBlank = true
 								logger.Infof("正在下载群频%s第%d消息文件：【%s】 大小：【%.2fMB】", username, id, fileName, mSize)
 							}
 
-							of, err := os.OpenFile(filePath, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0644)
-							if err != nil {
-								logger.Errorf("创建文件失败：【%s】|%v", filePath, err)
-							}
-
-							var isOK bool
-							var c int
-							for {
-								a, err := client.API().UploadGetFile(ctx, &tg.UploadGetFileRequest{
-									Location: docu.AsInputDocumentFileLocation(),
-									Offset:   lastSize,
-									Limit:    1024 * 1024,
-								})
+							if !isOK {
+								of, err := os.OpenFile(filePath, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0644)
 								if err != nil {
-									logger.Errorf("下载失败：%s", err.Error())
+									logger.Errorf("创建文件失败：【%s】|%v", filePath, err)
+									continue
+								}
+
+								var c, retries int
+								for {
+									a, err := client.API().UploadGetFile(ctx, &tg.UploadGetFileRequest{
+										Location: docu.AsInputDocumentFileLocation(),
+										Offset:   lastSize,
+										Limit:    1024 * 1024, // 每次处理1MB
+									})
+
+									if err != nil {
+										if retries >= maxRetry {
+											logger.Errorf("下载群频%s第%d消息文件：【%s】多次失败，已跳过", username, id, fileName)
+											break
+										}
+										var rpcErr *tgerr.Error
+										if errors.As(err, &rpcErr) {
+											if rpcErr.Code == 420 {
+												logger.Warningf("下载资源需要等待|%d|waitting...", rpcErr.Argument)
+												time.Sleep(time.Second * time.Duration(rpcErr.Argument+2))
+												client.Self(ctx)
+											} else {
+												time.Sleep(time.Second * 1)
+												logger.Warningf("下载失败：%s，重试中... (%d/%d)", err.Error(), retries+1, maxRetry)
+											}
+										} else {
+											time.Sleep(time.Second * 1)
+											logger.Warningf("下载失败：%s，重试中... (%d/%d)", err.Error(), retries+1, maxRetry)
+										}
+										retries++
+										continue
+									}
+									retries = 0
+
+									if b, ok := a.(*tg.UploadFile); ok {
+										lastSize += int64(len(b.Bytes))
+										_, err = of.Write(b.Bytes)
+										c++
+										if err != nil {
+											logger.Errorf("下载过程中写入文件失败:%v", err)
+											break
+										}
+										if c%100 == 0 {
+											err = of.Sync()
+											if err != nil {
+												logger.Errorf("文件写入同步失败:%v", err)
+												break
+											}
+										}
+										cm.ProgressBar(lastSize, docu.Size)
+										if lastSize >= docu.Size {
+											isOK = true
+											break
+										}
+									} else {
+										logger.Infof("下载过程中类型异常：%v\n", reflect.TypeOf(a))
+										break
+									}
+								}
+								err = of.Sync()
+								if err != nil {
+									logger.Errorf("文件最终写入同步失败:%v", err)
 									break
 								}
-								if b, ok := a.(*tg.UploadFile); ok {
-									lastSize += int64(len(b.Bytes))
-									_, err = of.Write(b.Bytes)
-									c++
+								of.Close()
+								if isBlank && c == 0 {
+									// 新建的文件没有任何写入，失败了，则删除临时生成的文件
+									err = os.Remove(filePath)
 									if err != nil {
-										logger.Errorf("下载过程中写入文件失败:%v", err)
-										break
+										logger.Warningf("删除临时文件【%s】失败：%s", filePath, err.Error())
+									} else {
+										logger.Infof("已删除临时文件：【%s】", filePath)
 									}
-									if c%100 == 0 {
-										of.Sync()
-									}
-									cm.ProgressBar(lastSize, docu.Size)
-									if lastSize >= docu.Size {
-										of.Sync()
-										isOK = true
-										break
-									}
-								} else {
-									logger.Infof("下载过程中类型异常：%v\n", reflect.TypeOf(a))
-									break
 								}
 							}
-							of.Close()
 
 							if isOK {
 								file := dm.TgFile{
@@ -424,9 +488,17 @@ loop:
 				case *tg.MessageService: // 比如某人加入离开群组
 					//tm := time.Unix(int64(tgMsg.Date), 0).Format(time.DateTime)
 					id = tgMsg.ID
+					if endMsgID > 0 && id >= endMsgID {
+						logger.Infof("已处理到目标消息ID：%d", endMsgID)
+						break loop
+					}
 					//fmt.Println(id, tm, "service")
 				case *tg.MessageEmpty:
 					id = tgMsg.ID
+					if endMsgID > 0 && id >= endMsgID {
+						logger.Infof("已处理到目标消息ID：%d", endMsgID)
+						break loop
+					}
 					//fmt.Println(id)
 				default:
 					//fmt.Println("ddd", reflect.TypeOf(tgMsg))
@@ -447,7 +519,7 @@ func exportData(ctx context.Context, client *telegram.Client) {
 
 	if len(groupData) > 0 {
 		fpath := fmt.Sprintf("./%s_groups.csv", session)
-		ff, err := os.OpenFile(fpath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0755)
+		ff, err := os.OpenFile(fpath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
 		if err != nil {
 			panic(err)
 		}
@@ -521,7 +593,7 @@ func getSession() bool {
 
 func main() {
 	if !getSession() {
-		logger.Warningf("无可用会话，请导入会话到会话目录！")
+		logger.Errorf("无可用会话，请导入会话到会话目录！")
 		return
 	}
 
@@ -565,7 +637,6 @@ func main() {
 		logger.Infof("运行异常：%v", err)
 		var rpcErr *tgerr.Error
 		if errors.As(err, &rpcErr) {
-			// 检查错误码是否为 420 (FLOOD_WAIT)
 			if rpcErr.Code == 401 {
 				logger.Warningf("账号失效，已移除：%s", sessionPath)
 				cleanSession()

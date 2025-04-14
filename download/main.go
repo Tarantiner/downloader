@@ -82,7 +82,7 @@ func init() {
 	if config.NET.UseProxy {
 		err := MakeResolver()
 		if err != nil {
-			panic(err)
+			logger.Errorf("初始化网络失败：%s", err.Error())
 		}
 	}
 
@@ -157,13 +157,13 @@ func getDialogs(ctx context.Context, client *telegram.Client) map[int64]*GroupIn
 
 		if err != nil {
 			if mtries >= maxRetry {
-				logger.Errorf("遍历对话框【%s:%d】多次失败，结束", username, offset)
+				logger.Errorf("遍历对话框【%s:%d】多次失败，结束", session, offset)
 				break
 			}
 			var rpcErr *tgerr.Error
 			if errors.As(err, &rpcErr) {
 				if rpcErr.Code == 420 {
-					logger.Infof("遍历对话框需要等待|%d|waitting...", rpcErr.Argument)
+					logger.Warningf("遍历对话框需要等待|%d|waitting...", rpcErr.Argument)
 					time.Sleep(time.Second * time.Duration(rpcErr.Argument+2))
 					client.Self(ctx)
 				} else {
@@ -252,7 +252,7 @@ func getGroupMessage(ctx context.Context, client *telegram.Client) {
 			AccessHash: group.AccessHash,
 		}
 		gid = group.ChannelID
-		logger.Infof("正在处理群频：%s", username)
+		logger.Infof("%s解析得群ID：%d正在处理群频：%d", username, gid, gid)
 	} else if gid != 0 {
 		groupData := getDialogs(ctx, client)
 		if info, ok := groupData[gid]; ok {
@@ -269,9 +269,10 @@ func getGroupMessage(ctx context.Context, client *telegram.Client) {
 
 	// 按照群频id创建分区目录
 	groupDir := filepath.Join(config.Download.DataDir, strconv.Itoa(int(gid)))
-	err := os.MkdirAll(groupDir, 0755)
+	err := os.MkdirAll(groupDir, 0644)
 	if err != nil {
-		panic(fmt.Sprintf("创建存储目录%s失败：%s", groupDir, err.Error()))
+		logger.Errorf("创建群频资源存储目录%s失败：%s", groupDir, err.Error())
+		return
 	}
 
 	// 获取聊天历史记录
@@ -293,13 +294,13 @@ loop:
 		})
 		if err != nil {
 			if mtries >= maxRetry {
-				logger.Errorf("遍历消息【%s:%d】多次失败，结束", username, offset)
+				logger.Errorf("遍历消息【%d:%d】多次失败，结束", gid, offset)
 				break
 			}
 			var rpcErr *tgerr.Error
 			if errors.As(err, &rpcErr) {
 				if rpcErr.Code == 420 {
-					logger.Infof("遍历消息需要等待|%d|waitting...", rpcErr.Argument)
+					logger.Warningf("遍历消息需要等待|%d|waitting...", rpcErr.Argument)
 					time.Sleep(time.Second * time.Duration(rpcErr.Argument+2))
 					client.Self(ctx)
 				} else {
@@ -320,7 +321,7 @@ loop:
 		switch resp := history.(type) {
 		case *tg.MessagesChannelMessages:
 			if len(resp.Messages) == 0 {
-				logger.Infof("群频：%s已处理完成", username)
+				logger.Infof("群频：%d已处理完成", gid)
 				break loop
 			}
 			reverse(resp.Messages)
@@ -386,7 +387,7 @@ loop:
 									}
 								}
 								if !match {
-									logger.Infof("文件名或文本not match：【%s】", fileName)
+									logger.Infof("文件名或message not match：【%s】", fileName)
 									continue
 								}
 							}
@@ -421,7 +422,7 @@ loop:
 									continue
 								} else if lastSize%4096 != 0 {
 									lastSize = 0
-									logger.Infof("群频%s第%d消息，原文件已损坏，无法继续下载文件，开始重新下载：【%s】", username, id, fileName)
+									logger.Infof("群频%d第%d消息，原文件已损坏，无法继续下载文件，开始重新下载：【%s】", gid, id, fileName)
 									err = os.Remove(filePath)
 									if err != nil {
 										logger.Errorf("删除旧文件【%s】失败：%s，跳过", filePath, err.Error())
@@ -432,12 +433,12 @@ loop:
 									}
 								} else {
 									rate := float64(lastSize) / float64(docu.Size) * 100
-									logger.Infof("群频%s第%d消息，原文件进度%.2f%%，正在继续下载：【%s】", username, id, rate, fileName)
+									logger.Infof("群频%d第%d消息，原文件进度%.2f%%，正在继续下载：【%s】", gid, id, rate, fileName)
 								}
 							} else {
 								// 不存在文件
 								isBlank = true
-								logger.Infof("正在下载群频%s第%d消息文件：【%s】 大小：【%.2fMB】", username, id, fileName, mSize)
+								logger.Infof("正在下载群频%d第%d消息文件：【%s】 大小：【%.2fMB】", gid, id, fileName, mSize)
 							}
 
 							// 文件md5再次过滤，解决不同名但是相同文件内容和大小，导致重复下载问题
@@ -455,7 +456,7 @@ loop:
 								b.Bytes = append(b.Bytes, []byte(fmt.Sprintf("%d", docu.Size))...)
 								fid = getFileMd5(b.Bytes)
 							} else {
-								logger.Fatalf("类型异常：%v", reflect.TypeOf(a))
+								logger.Errorf("类型异常：%v", reflect.TypeOf(a))
 							}
 							var shouldInsert = true
 							if dm.DbIsFileExists(logger, fid) {
@@ -495,7 +496,7 @@ loop:
 
 								if err != nil {
 									if retries >= maxRetry {
-										logger.Errorf("下载群频%s第%d消息文件：【%s】多次失败，已跳过", username, id, fileName)
+										logger.Errorf("下载群频%d第%d消息文件：【%s】多次失败，已跳过", gid, id, fileName)
 										break
 									}
 									var rpcErr *tgerr.Error
@@ -596,7 +597,7 @@ loop:
 				}
 			}
 		default:
-			logger.Fatalf("Unexpected response type: %T", history)
+			logger.Errorf("Unexpected response type: %T", history)
 		}
 
 		offset = id + 1
@@ -611,7 +612,7 @@ func exportData(ctx context.Context, client *telegram.Client) {
 		fpath := fmt.Sprintf("./%s_groups.csv", session)
 		ff, err := os.OpenFile(fpath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
 		if err != nil {
-			panic(err)
+			logger.Errorf("导出群频信息时，创建csv文件失败：%s：%s", fpath, err.Error())
 		}
 		defer ff.Close()
 		cv := csv.NewWriter(ff)
@@ -621,15 +622,18 @@ func exportData(ctx context.Context, client *telegram.Client) {
 			cv.Write([]string{strconv.Itoa(int(group.ID)), group.Name, group.Title, strconv.Itoa(int(group.Count))})
 		}
 		cv.Flush()
-		fmt.Printf("已导出%d个群频信息>>>%s\n", len(groupData), fpath)
+		logger.Infof("会话%s已导出%d个群频信息>>>%s", session, len(groupData), fpath)
 	} else {
-		fmt.Println("未找到用户对话框")
+		logger.Infof("会话%s没有群频信息", session)
 	}
 }
 
-func cleanSession() {
+func cleanSession() error {
 	if _, err := os.Stat(sessionPath); err == nil {
-		os.Rename(sessionPath, sessionPath+".bak")
+		err = os.Rename(sessionPath, sessionPath+".bak")
+		return err
+	} else {
+		return err
 	}
 }
 
@@ -724,12 +728,16 @@ func main() {
 
 		return nil
 	}); err != nil {
-		logger.Infof("运行异常：%v", err)
+		logger.Errorf("运行异常：%v", err)
 		var rpcErr *tgerr.Error
 		if errors.As(err, &rpcErr) {
 			if rpcErr.Code == 401 {
-				logger.Warningf("账号失效，已移除：%s", sessionPath)
-				cleanSession()
+				err = cleanSession()
+				if err != nil {
+					logger.Errorf("账号失效，移除会话失败：%s|%s", sessionPath, err.Error())
+				} else {
+					logger.Errorf("账号失效，已移除会话：%s", sessionPath)
+				}
 			}
 		}
 	}

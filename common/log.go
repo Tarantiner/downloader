@@ -100,7 +100,7 @@ func NewLogger(logPath string, logSize int, useColor bool) *logrus.Logger {
 		Writer:    fileLogger,
 		LogLevels: logrus.AllLevels,
 		Formatter: fileFormatter, // 使用相同的格式但不带颜色
-		minLevel:  logrus.WarnLevel,
+		minLevel:  logrus.FatalLevel,
 	})
 	return log
 }

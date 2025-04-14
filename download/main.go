@@ -144,6 +144,7 @@ func reverse(s []tg.MessageClass) {
 func getDialogs(ctx context.Context, client *telegram.Client) map[int64]*GroupInfo {
 	offset := 0
 	limit := 100
+	var mtries int
 	mp := make(map[int64]*GroupInfo)
 	for {
 		resp, err := client.API().MessagesGetDialogs(ctx, &tg.MessagesGetDialogsRequest{
@@ -151,9 +152,31 @@ func getDialogs(ctx context.Context, client *telegram.Client) map[int64]*GroupIn
 			Limit:      limit,
 			OffsetPeer: &tg.InputPeerEmpty{},
 		})
+
 		if err != nil {
-			panic(fmt.Sprintf("遍历对话框失败: %s", err.Error()))
+			if mtries >= maxRetry {
+				logger.Errorf("遍历对话框【%s:%d】多次失败，结束", username, offset)
+				break
+			}
+			var rpcErr *tgerr.Error
+			if errors.As(err, &rpcErr) {
+				if rpcErr.Code == 420 {
+					logger.Infof("遍历对话框需要等待|%d|waitting...", rpcErr.Argument)
+					time.Sleep(time.Second * time.Duration(rpcErr.Argument+2))
+					client.Self(ctx)
+				} else {
+					time.Sleep(time.Second * 1)
+					logger.Warningf("遍历对话框失败：%d|%s，重试中... (%d/%d)", rpcErr.Code, err.Error(), mtries+1, maxRetry)
+				}
+			} else {
+				time.Sleep(time.Second * 1)
+				logger.Warningf("遍历对话框失败：%s，重试中... (%d/%d)", err.Error(), mtries+1, maxRetry)
+			}
+			mtries++
+			continue
 		}
+		mtries = 0
+
 		if resp == nil {
 			break
 		}
@@ -174,7 +197,7 @@ func getDialogs(ctx context.Context, client *telegram.Client) map[int64]*GroupIn
 			}
 		}
 		offset = offset + limit
-		time.Sleep(time.Second * 10)
+		time.Sleep(time.Millisecond * 800)
 	}
 	return mp
 }
@@ -320,17 +343,44 @@ loop:
 								if len(xlis) >= 2 {
 									fType = xlis[len(xlis)-1]
 									tgFileName = fType
-									fid = getFileMd5([]byte(fmt.Sprintf("%s%d", fType, docu.Size)))
 									fileName = fmt.Sprintf("%d---%d---.%s", gid, id, xlis[len(xlis)-1])
 								} else {
-									fid = getFileMd5([]byte(fmt.Sprintf("%s%d", fileName, docu.Size)))
 									fileName = fmt.Sprintf("%d---%d---.unknown", gid, id)
 								}
 
 							} else {
 								tgFileName = fileName
-								fid = getFileMd5([]byte(fmt.Sprintf("%s%d", fileName, docu.Size)))
 								fileName = fmt.Sprintf("%d---%d---%s", gid, id, fileName)
+							}
+
+							// 文件大小过滤
+							if config.Download.MinSize != -1 {
+								if docu.Size < config.Download.MinSize*1024*1024 {
+									logger.Infof("文件太小：【%s】：【%.2fMB】", fileName, mSize)
+									continue
+								}
+							}
+							if config.Download.MaxSize != -1 {
+								if docu.Size > config.Download.MaxSize*1024*1024 {
+									logger.Infof("文件太大：【%s】：【%.2fMB】", fileName, mSize)
+									continue
+								}
+							}
+
+							// 文件名过滤
+							if len(config.Download.FMatches) > 0 {
+								msg := strings.ToLower(tgMsg.Message)
+								var match bool
+								for s, _ := range config.Download.FMatches {
+									if strings.Contains(msg, s) || strings.Contains(fileName, s) {
+										match = true
+										break
+									}
+								}
+								if !match {
+									logger.Infof("文件名或文本not match：【%s】", fileName)
+									continue
+								}
 							}
 
 							suffixLis := strings.Split(fileName, ".")

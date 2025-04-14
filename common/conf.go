@@ -17,6 +17,10 @@ type Config struct {
 		ExcludeDownloadTypes string `ini:"excludeDownloadTypes"`
 		Dtypes               map[string]struct{}
 		EDtypes              map[string]struct{}
+		Matches              string `ini:"nameMatches"`
+		FMatches             map[string]struct{}
+		MinSize              int64 `ini:"minSize"`
+		MaxSize              int64 `ini:"maxSize"`
 	} `ini:"download"`
 
 	Login struct {
@@ -58,6 +62,7 @@ func LoadConfig(config *Config, path string) error {
 	}
 	lis := strings.Split(config.Download.DownloadTypes, ",")
 	lis2 := strings.Split(config.Download.ExcludeDownloadTypes, ",")
+	lis3 := strings.Split(config.Download.Matches, ",")
 	mp1 := make(map[string]struct{})
 	for _, v := range lis {
 		if v == "" {
@@ -75,6 +80,15 @@ func LoadConfig(config *Config, path string) error {
 		mp2[v] = struct{}{}
 	}
 	config.Download.EDtypes = mp2
+
+	mp3 := make(map[string]struct{})
+	for _, v := range lis3 {
+		if v == "" {
+			continue
+		}
+		mp3[v] = struct{}{}
+	}
+	config.Download.FMatches = mp3
 
 	// login
 	if config.Login.APIID == -1 {

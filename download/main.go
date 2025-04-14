@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"github.com/gotd/td/telegram"
 	"github.com/gotd/td/telegram/dcs"
+	"github.com/gotd/td/telegram/downloader"
 	"github.com/gotd/td/tg"
 	"github.com/gotd/td/tgerr"
 	"github.com/sirupsen/logrus"
@@ -143,7 +144,7 @@ func reverse(s []tg.MessageClass) {
 	}
 }
 
-func getDialogs(ctx context.Context, client *telegram.Client) map[int64]*GroupInfo {
+func getDialogs() map[int64]*GroupInfo {
 	offset := 0
 	limit := 100
 	var mtries int
@@ -211,7 +212,7 @@ func getFileMd5(s []byte) string {
 	return md5Str2
 }
 
-func getGroupInfo(ctx context.Context, client *telegram.Client) *tg.InputChannel {
+func getGroupInfo() *tg.InputChannel {
 	resolved, err := client.API().ContactsResolveUsername(ctx, &tg.ContactsResolveUsernameRequest{Username: username})
 	if err != nil {
 		logger.Errorf("failed to resolve username: %s|%s", username, err.Error())
@@ -240,10 +241,70 @@ func getGroupInfo(ctx context.Context, client *telegram.Client) *tg.InputChannel
 	return nil
 }
 
-func getGroupMessage(ctx context.Context, client *telegram.Client) {
+func downloadMediaPhoto(photo *tg.Photo, photoPath string) {
+	// 获取最大的图片尺寸
+	var maxSize *tg.PhotoSize
+	var maxArea int
+	for _, size := range photo.Sizes {
+		if s, ok := size.(*tg.PhotoSize); ok {
+			area := s.W * s.H
+			if area > maxArea {
+				maxArea = area
+				maxSize = s
+			}
+		}
+	}
+	if maxSize == nil {
+		logger.Warningf("未找到合适的图片尺寸：%s", photoPath)
+		return
+	}
+
+	ff, _ := os.Stat(photoPath)
+	if ff != nil {
+		if ff.Size() == int64(maxSize.Size) {
+			return
+		} else {
+			logger.Warningf("存在图片，大小不匹配，重新下载：%s", photoPath)
+		}
+	}
+
+	// 设置下载参数
+	dl := downloader.NewDownloader().WithPartSize(1024 * 1024) // 1MB 分块
+	location := &tg.InputPhotoFileLocation{
+		ID:            photo.ID,
+		AccessHash:    photo.AccessHash,
+		FileReference: photo.FileReference,
+		ThumbSize:     maxSize.Type,
+	}
+
+	// 重试逻辑
+	for retries := 0; retries < maxRetry; retries++ {
+		_, err := dl.Download(client.API(), location).ToPath(ctx, photoPath)
+		if err == nil {
+			return
+		}
+
+		// 处理限流错误
+		var rpcErr *tgerr.Error
+		if errors.As(err, &rpcErr) && rpcErr.Code == 420 {
+			waitTime := time.Second * time.Duration(rpcErr.Argument+2)
+			logger.Warningf("下载图片%s限流，等待 %v...", photoPath, waitTime)
+			time.Sleep(time.Second * time.Duration(waitTime+2))
+			continue
+		}
+
+		// 其他错误
+		logger.Warningf("下载图片%s失败，重试中... (%d/%d): %v", photoPath, retries+1, maxRetry, err)
+		time.Sleep(time.Second * 1)
+	}
+
+	logger.Errorf("下载图片%s多次失败", photoPath)
+}
+
+func getGroupMessage() {
 	var peer *tg.InputPeerChannel
 	if username != "" {
-		group := getGroupInfo(ctx, client)
+		group := getGroupInfo()
 		if group == nil {
 			return
 		}
@@ -254,7 +315,7 @@ func getGroupMessage(ctx context.Context, client *telegram.Client) {
 		gid = group.ChannelID
 		logger.Infof("%s解析得群ID：%d正在处理群频：%d", username, gid, gid)
 	} else if gid != 0 {
-		groupData := getDialogs(ctx, client)
+		groupData := getDialogs()
 		if info, ok := groupData[gid]; ok {
 			peer = &tg.InputPeerChannel{
 				ChannelID:  gid,
@@ -269,7 +330,8 @@ func getGroupMessage(ctx context.Context, client *telegram.Client) {
 
 	// 按照群频id创建分区目录
 	groupDir := filepath.Join(config.Download.DataDir, strconv.Itoa(int(gid)))
-	err := os.MkdirAll(groupDir, 0644)
+	groupPhotoDir := filepath.Join(config.Download.DataDir, strconv.Itoa(int(gid)), "images")
+	err := os.MkdirAll(groupPhotoDir, 0644)
 	if err != nil {
 		logger.Errorf("创建群频资源存储目录%s失败：%s", groupDir, err.Error())
 		return
@@ -575,6 +637,13 @@ loop:
 								dm.DbNewFile(logger, &file)
 							}
 						}
+					} else if config.Download.DownloadPhoto {
+						photoPath := filepath.Join(groupPhotoDir, fmt.Sprintf("%d---%d.jpg", gid, id))
+						if p, ok := tgMsg.Media.(*tg.MessageMediaPhoto); ok {
+							if pp, ok := p.Photo.(*tg.Photo); ok {
+								downloadMediaPhoto(pp, photoPath)
+							}
+						}
 					}
 				case *tg.MessageService: // 比如某人加入离开群组
 					//tm := time.Unix(int64(tgMsg.Date), 0).Format(time.DateTime)
@@ -605,8 +674,8 @@ loop:
 	}
 }
 
-func exportData(ctx context.Context, client *telegram.Client) {
-	groupData := getDialogs(ctx, client)
+func exportData() {
+	groupData := getDialogs()
 
 	if len(groupData) > 0 {
 		fpath := fmt.Sprintf("./%s_groups.csv", session)
@@ -718,13 +787,13 @@ func main() {
 		logger.Infof("Logged in as: %s (%d)", self.Username, self.ID)
 
 		if export {
-			exportData(ctx, client)
+			exportData()
 			return nil
 		}
 
 		//username := "BabukLockerRaas" // 替换为你要查找的群组用户名
 		//username := "jjifei" // 替换为你要查找的群组用户名
-		getGroupMessage(ctx, client)
+		getGroupMessage()
 
 		return nil
 	}); err != nil {

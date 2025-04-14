@@ -21,6 +21,7 @@ type Config struct {
 		FMatches             map[string]struct{}
 		MinSize              int64 `ini:"minSize"`
 		MaxSize              int64 `ini:"maxSize"`
+		DownloadPhoto        bool  `ini:"downloadPhoto"`
 	} `ini:"download"`
 
 	Login struct {

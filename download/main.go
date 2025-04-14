@@ -36,6 +36,7 @@ var (
 	username             string
 	gid                  int64
 	export               bool
+	force                bool
 	startMsgID           int
 	endMsgID             int
 	maxRetry             int
@@ -46,6 +47,7 @@ func init() {
 	flag.StringVar(&username, "name", "", "目标群频名")
 	flag.Int64Var(&gid, "id", 0, "群ID，常用于私密群")
 	flag.BoolVar(&export, "export", false, "是否导出该会话的群频信息true/false")
+	flag.BoolVar(&force, "f", false, "是否强制下载true/false，误删文件，但是库里记录唯一值了，若还想下载，则需要配置true强制下载")
 	flag.IntVar(&startMsgID, "s", 1, "从哪条消息ID开始处理，需>=1，从该条消息开始采集")
 	flag.IntVar(&endMsgID, "e", 0, "处理到哪条消息ID，默认0不限制，不会采集该条消息")
 	flag.IntVar(&maxRetry, "t", 5, "遍历聊天和下载文件出现异常的重试次数")
@@ -265,6 +267,13 @@ func getGroupMessage(ctx context.Context, client *telegram.Client) {
 		}
 	}
 
+	// 按照群频id创建分区目录
+	groupDir := filepath.Join(config.Download.DataDir, strconv.Itoa(int(gid)))
+	err := os.MkdirAll(groupDir, 0755)
+	if err != nil {
+		panic(fmt.Sprintf("创建存储目录%s失败：%s", groupDir, err.Error()))
+	}
+
 	// 获取聊天历史记录
 	offset := startMsgID
 	logger.Infof("当前从消息ID：%d开始采集", offset)
@@ -336,7 +345,6 @@ loop:
 								}
 							}
 
-							var fid string
 							if fileName == "" {
 								var fType string
 								xlis := strings.Split(docu.MimeType, "/")
@@ -383,9 +391,10 @@ loop:
 								}
 							}
 
+							// 文件类型过滤
 							suffixLis := strings.Split(fileName, ".")
 							if len(suffixLis) >= 2 {
-								s := suffixLis[len(suffixLis)-1]
+								s := strings.ToLower(suffixLis[len(suffixLis)-1])
 								if len(config.Download.Dtypes) > 0 {
 									// 下载文件类型过滤
 									if _, ok := config.Download.Dtypes[s]; !ok {
@@ -400,28 +409,22 @@ loop:
 								}
 							}
 
-							if dm.DbIsFileExists(logger, fid) {
-								logger.Infof("已在数据库找到文件记录，跳过：【%s】", fileName)
-								continue
-							}
-
+							// 同名同大小文件过滤
 							var lastSize int64
-							var isBlank, isOK bool
-							filePath := filepath.Join(config.Download.DataDir, fileName)
+							var isBlank bool
+							filePath := filepath.Join(groupDir, fileName)
 							ff, _ := os.Stat(filePath)
-
 							if ff != nil {
-								// 存在文件
 								lastSize = ff.Size()
-								if lastSize == docu.Size {
-									logger.Infof("本地文件已存在，且大小相同，跳过：【%s】", fileName)
-									isOK = true
+								if ff.Size() == docu.Size {
+									logger.Infof("同名文件相同大小已下载过，跳过：【%s】", filePath)
+									continue
 								} else if lastSize%4096 != 0 {
 									lastSize = 0
 									logger.Infof("群频%s第%d消息，原文件已损坏，无法继续下载文件，开始重新下载：【%s】", username, id, fileName)
 									err = os.Remove(filePath)
 									if err != nil {
-										logger.Errorf("删除旧文件【%s】失败：%s", filePath, err.Error())
+										logger.Errorf("删除旧文件【%s】失败：%s，跳过", filePath, err.Error())
 										continue
 									} else {
 										isBlank = true
@@ -437,84 +440,119 @@ loop:
 								logger.Infof("正在下载群频%s第%d消息文件：【%s】 大小：【%.2fMB】", username, id, fileName, mSize)
 							}
 
-							if !isOK {
-								of, err := os.OpenFile(filePath, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0644)
-								if err != nil {
-									logger.Errorf("创建文件失败：【%s】|%v", filePath, err)
-									continue
-								}
-
-								var c, retries int
-								for {
-									a, err := client.API().UploadGetFile(ctx, &tg.UploadGetFileRequest{
-										Location: docu.AsInputDocumentFileLocation(),
-										Offset:   lastSize,
-										Limit:    1024 * 1024, // 每次处理1MB
-									})
-
-									if err != nil {
-										if retries >= maxRetry {
-											logger.Errorf("下载群频%s第%d消息文件：【%s】多次失败，已跳过", username, id, fileName)
-											break
+							// 文件md5再次过滤，解决不同名但是相同文件内容和大小，导致重复下载问题
+							a, err := client.API().UploadGetFile(ctx, &tg.UploadGetFileRequest{
+								Location: docu.AsInputDocumentFileLocation(),
+								Offset:   0, // 必须4096整数倍
+								Limit:    4096,
+							})
+							if err != nil {
+								logger.Warningf("下载片段失败，无法验证是否在库里，跳过：%s", err.Error())
+								continue
+							}
+							var fid string
+							if b, ok := a.(*tg.UploadFile); ok {
+								b.Bytes = append(b.Bytes, []byte(fmt.Sprintf("%d", docu.Size))...)
+								fid = getFileMd5(b.Bytes)
+							} else {
+								logger.Fatalf("类型异常：%v", reflect.TypeOf(a))
+							}
+							if dm.DbIsFileExists(logger, fid) {
+								if !force {
+									logger.Infof("已在数据库找到文件记录，跳过：【%s】", filePath)
+									ff, _ := os.Stat(filePath)
+									if ff != nil {
+										err = os.Remove(filePath)
+										if err != nil {
+											logger.Warningf("删除重复旧文件【%s】失败：%s", filePath, err.Error())
+										} else {
+											logger.Infof("已删除重复旧文件【%s】", filePath)
 										}
-										var rpcErr *tgerr.Error
-										if errors.As(err, &rpcErr) {
-											if rpcErr.Code == 420 {
-												logger.Warningf("下载资源需要等待|%d|waitting...", rpcErr.Argument)
-												time.Sleep(time.Second * time.Duration(rpcErr.Argument+2))
-												client.Self(ctx)
-											} else {
-												time.Sleep(time.Second * 1)
-												logger.Warningf("下载失败：%s，重试中... (%d/%d)", err.Error(), retries+1, maxRetry)
-											}
+									}
+									continue
+								} else {
+									logger.Infof("已在数据库找到文件记录，但强制下载：【%s】", filePath)
+								}
+							}
+
+							// 正式开始下载
+							var isOK bool
+							of, err := os.OpenFile(filePath, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0644)
+							if err != nil {
+								logger.Errorf("创建文件失败：【%s】|%v", filePath, err)
+								continue
+							}
+
+							var c, retries int
+							for {
+								a, err := client.API().UploadGetFile(ctx, &tg.UploadGetFileRequest{
+									Location: docu.AsInputDocumentFileLocation(),
+									Offset:   lastSize,
+									Limit:    1024 * 1024, // 每次处理1MB
+								})
+
+								if err != nil {
+									if retries >= maxRetry {
+										logger.Errorf("下载群频%s第%d消息文件：【%s】多次失败，已跳过", username, id, fileName)
+										break
+									}
+									var rpcErr *tgerr.Error
+									if errors.As(err, &rpcErr) {
+										if rpcErr.Code == 420 {
+											logger.Warningf("下载资源需要等待|%d|waitting...", rpcErr.Argument)
+											time.Sleep(time.Second * time.Duration(rpcErr.Argument+2))
+											client.Self(ctx)
 										} else {
 											time.Sleep(time.Second * 1)
 											logger.Warningf("下载失败：%s，重试中... (%d/%d)", err.Error(), retries+1, maxRetry)
 										}
-										retries++
-										continue
-									}
-									retries = 0
-
-									if b, ok := a.(*tg.UploadFile); ok {
-										lastSize += int64(len(b.Bytes))
-										_, err = of.Write(b.Bytes)
-										c++
-										if err != nil {
-											logger.Errorf("下载过程中写入文件失败:%v", err)
-											break
-										}
-										if c%100 == 0 {
-											err = of.Sync()
-											if err != nil {
-												logger.Errorf("文件写入同步失败:%v", err)
-												break
-											}
-										}
-										cm.ProgressBar(lastSize, docu.Size)
-										if lastSize >= docu.Size {
-											isOK = true
-											break
-										}
 									} else {
-										logger.Infof("下载过程中类型异常：%v\n", reflect.TypeOf(a))
+										time.Sleep(time.Second * 1)
+										logger.Warningf("下载失败：%s，重试中... (%d/%d)", err.Error(), retries+1, maxRetry)
+									}
+									retries++
+									continue
+								}
+								retries = 0
+
+								if b, ok := a.(*tg.UploadFile); ok {
+									lastSize += int64(len(b.Bytes))
+									_, err = of.Write(b.Bytes)
+									c++
+									if err != nil {
+										logger.Errorf("下载过程中写入文件失败:%v", err)
 										break
 									}
-								}
-								err = of.Sync()
-								if err != nil {
-									logger.Errorf("文件最终写入同步失败:%v", err)
+									if c%100 == 0 {
+										err = of.Sync()
+										if err != nil {
+											logger.Errorf("文件写入同步失败:%v", err)
+											break
+										}
+									}
+									cm.ProgressBar(lastSize, docu.Size)
+									if lastSize >= docu.Size {
+										isOK = true
+										break
+									}
+								} else {
+									logger.Infof("下载过程中类型异常：%v\n", reflect.TypeOf(a))
 									break
 								}
-								of.Close()
-								if isBlank && c == 0 {
-									// 新建的文件没有任何写入，失败了，则删除临时生成的文件
-									err = os.Remove(filePath)
-									if err != nil {
-										logger.Warningf("删除临时文件【%s】失败：%s", filePath, err.Error())
-									} else {
-										logger.Infof("已删除临时文件：【%s】", filePath)
-									}
+							}
+							err = of.Sync()
+							if err != nil {
+								logger.Errorf("文件最终写入同步失败:%v", err)
+								break
+							}
+							of.Close()
+							if isBlank && c == 0 {
+								// 新建的文件没有任何写入，失败了，则删除临时生成的文件
+								err = os.Remove(filePath)
+								if err != nil {
+									logger.Warningf("删除临时文件【%s】失败：%s", filePath, err.Error())
+								} else {
+									logger.Infof("已删除临时文件：【%s】", filePath)
 								}
 							}
 

@@ -457,6 +457,7 @@ loop:
 							} else {
 								logger.Fatalf("类型异常：%v", reflect.TypeOf(a))
 							}
+							var shouldInsert = true
 							if dm.DbIsFileExists(logger, fid) {
 								if !force {
 									logger.Infof("已在数据库找到文件记录，跳过：【%s】", filePath)
@@ -471,6 +472,7 @@ loop:
 									}
 									continue
 								} else {
+									shouldInsert = false
 									logger.Infof("已在数据库找到文件记录，但强制下载：【%s】", filePath)
 								}
 							}
@@ -556,7 +558,7 @@ loop:
 								}
 							}
 
-							if isOK {
+							if isOK && shouldInsert {
 								file := dm.TgFile{
 									Fid:   fid,
 									Gid:   gid,

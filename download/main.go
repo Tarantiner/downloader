@@ -511,8 +511,24 @@ loop:
 							})
 							if err != nil {
 								logger.Warningf("下载片段失败，无法验证是否在库里，跳过：%s", err.Error())
+
+								var rpcErr *tgerr.Error
+								if errors.As(err, &rpcErr) {
+									if rpcErr.Code == 420 {
+										logger.Warningf("下载片段需要等待|%d|跳过|waitting...", rpcErr.Argument)
+										time.Sleep(time.Second * time.Duration(rpcErr.Argument+2))
+										client.Self(ctx)
+									} else {
+										time.Sleep(time.Second * 1)
+										logger.Warningf("下载片段失败，跳过：%s", err.Error())
+									}
+								} else {
+									time.Sleep(time.Second * 1)
+									logger.Warningf("下载片段失败，跳过：%s", err.Error())
+								}
 								continue
 							}
+
 							var fid string
 							if b, ok := a.(*tg.UploadFile); ok {
 								b.Bytes = append(b.Bytes, []byte(fmt.Sprintf("%d", docu.Size))...)

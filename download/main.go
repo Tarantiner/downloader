@@ -40,6 +40,7 @@ var (
 	endMsgID             int
 	maxRetry             int
 	perSize              int
+	topicID              int
 )
 
 func init() {
@@ -50,6 +51,7 @@ func init() {
 	flag.IntVar(&endMsgID, "e", 0, "处理到哪条消息ID，默认0不限制，不会采集该条消息")
 	flag.IntVar(&maxRetry, "t", 5, "遍历聊天和下载文件出现异常的重试次数")
 	flag.IntVar(&perSize, "p", 3, "每次请求多少条聊天1-100，若下载文件大，建议设小，减少文件引用过期情况")
+	flag.IntVar(&topicID, "topic", -1, "采集聊天中指定话题里的消息")
 	flag.Parse()
 
 	if !export && gid == 0 && username == "" {
@@ -249,16 +251,33 @@ func getGroupMessage(ctx context.Context, client *telegram.Client) {
 loop:
 	for {
 		// 调用 ChannelsGetHistory 方法
-		history, err := client.API().MessagesGetHistory(ctx, &tg.MessagesGetHistoryRequest{
-			Peer:       peer,
-			OffsetID:   offset,   // 从最新消息开始
-			OffsetDate: 0,        // 不需要按日期偏移
-			AddOffset:  -perSize, // 设置偏移量
-			Limit:      perSize,  // 每次获取的消息数量
-			MaxID:      0,        // 最大消息 ID（0 表示不限制）
-			MinID:      0,        // 最小消息 ID（0 表示不限制）
-			Hash:       0,
-		})
+		var history tg.MessagesMessagesClass
+		var err error
+		if topicID != -1 {
+			history, err = client.API().MessagesGetReplies(ctx, &tg.MessagesGetRepliesRequest{
+				Peer:       peer,
+				MsgID:      topicID,
+				OffsetID:   offset,   // 从最新消息开始
+				OffsetDate: 0,        // 不需要按日期偏移
+				AddOffset:  -perSize, // 设置偏移量
+				Limit:      perSize,  // 每次获取的消息数量
+				MaxID:      0,        // 最大消息 ID（0 表示不限制）
+				MinID:      0,        // 最小消息 ID（0 表示不限制）
+				Hash:       0,
+			})
+		} else {
+			history, err = client.API().MessagesGetHistory(ctx, &tg.MessagesGetHistoryRequest{
+				Peer:       peer,
+				OffsetID:   offset,   // 从最新消息开始
+				OffsetDate: 0,        // 不需要按日期偏移
+				AddOffset:  -perSize, // 设置偏移量
+				Limit:      perSize,  // 每次获取的消息数量
+				MaxID:      0,        // 最大消息 ID（0 表示不限制）
+				MinID:      0,        // 最小消息 ID（0 表示不限制）
+				Hash:       0,
+			})
+		}
+
 		if err != nil {
 			if mtries >= maxRetry {
 				logger.Errorf("遍历消息【%s:%d】多次失败，结束", username, offset)

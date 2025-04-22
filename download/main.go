@@ -144,12 +144,12 @@ func reverse(s []tg.MessageClass) {
 }
 
 func getDialogs(ctx context.Context, client *telegram.Client) map[int64]*GroupInfo {
-	offset := 0
+	offsetDate := 0
 	limit := 100
 	mp := make(map[int64]*GroupInfo)
 	for {
 		resp, err := client.API().MessagesGetDialogs(ctx, &tg.MessagesGetDialogsRequest{
-			OffsetID:   offset,
+			OffsetDate: offsetDate,
 			Limit:      limit,
 			OffsetPeer: &tg.InputPeerEmpty{},
 		})
@@ -160,6 +160,15 @@ func getDialogs(ctx context.Context, client *telegram.Client) map[int64]*GroupIn
 			break
 		}
 		if rsp, ok := resp.(*tg.MessagesDialogs); ok {
+			for _, msg := range rsp.Messages {
+				switch a := msg.(type) {
+				case *tg.Message:
+					offsetDate = a.Date
+				case *tg.MessageService:
+					offsetDate = a.Date
+				}
+			}
+
 			for _, c := range rsp.Chats {
 				if chat, ok := c.(*tg.Channel); ok {
 					mp[chat.ID] = &GroupInfo{
@@ -171,15 +180,150 @@ func getDialogs(ctx context.Context, client *telegram.Client) map[int64]*GroupIn
 					}
 				}
 			}
-			if len(rsp.Chats) < limit {
+			if len(rsp.Dialogs) < limit {
+				break
+			}
+		} else if rsp, ok := resp.(*tg.MessagesDialogsSlice); ok {
+			for _, msg := range rsp.Messages {
+				switch a := msg.(type) {
+				case *tg.Message:
+					offsetDate = a.Date
+				case *tg.MessageService:
+					offsetDate = a.Date
+				}
+			}
+
+			for _, c := range rsp.Chats {
+				if chat, ok := c.(*tg.Channel); ok {
+					mp[chat.ID] = &GroupInfo{
+						ID:    chat.ID,
+						Name:  chat.Username,
+						Title: chat.Title,
+						Count: chat.ParticipantsCount,
+						Hash:  chat.AccessHash,
+					}
+				}
+			}
+			if len(rsp.Dialogs) < limit {
 				break
 			}
 		}
-		offset = offset + limit
-		time.Sleep(time.Second * 10)
+		time.Sleep(time.Second * 5)
 	}
 	return mp
 }
+
+//func getDialogs(ctx context.Context, client *telegram.Client) map[int64]*GroupInfo {
+//	offsetID := 0
+//	offsetDate := 0
+//	limit := 50
+//	mp := make(map[int64]*GroupInfo)
+//	var x int
+//	//var offsetPeer *tg.InputPeerClass
+//	offsetPeer := tg.InputPeerClass(&tg.InputPeerEmpty{})
+//	for {
+//		fmt.Println("请求", offsetPeer, offsetDate, limit, len(mp))
+//		resp, err := client.API().MessagesGetDialogs(ctx, &tg.MessagesGetDialogsRequest{
+//			//OffsetID:   offsetID,
+//			OffsetDate: offsetDate,
+//			Limit:      limit,
+//			OffsetPeer: &tg.InputPeerEmpty{},
+//		})
+//		if err != nil {
+//			panic(fmt.Sprintf("遍历对话框失败: %s", err.Error()))
+//		}
+//		if resp == nil {
+//			break
+//		}
+//		if rsp, ok := resp.(*tg.MessagesDialogs); ok {
+//			for _, do := range rsp.Dialogs {
+//				offsetID = do.GetTopMessage()
+//				//offsetPeer = do.GetPeer()
+//				if dia, ok := do.(*tg.Dialog); ok {
+//					// 获取最后一个对话的 Peer
+//					switch peer := dia.Peer.(type) {
+//					case *tg.PeerUser:
+//						offsetPeer = &tg.InputPeerUser{UserID: peer.UserID}
+//					case *tg.PeerChat:
+//						offsetPeer = &tg.InputPeerChat{ChatID: peer.ChatID}
+//					case *tg.PeerChannel:
+//						offsetPeer = &tg.InputPeerChannel{ChannelID: peer.ChannelID}
+//					}
+//				}
+//			}
+//
+//			for _, msg := range rsp.Messages {
+//				switch a := msg.(type) {
+//				case *tg.Message:
+//					offsetDate = a.Date
+//				case *tg.MessageService:
+//					offsetDate = a.Date
+//				}
+//			}
+//
+//			for _, c := range rsp.Chats {
+//				if chat, ok := c.(*tg.Channel); ok {
+//					mp[chat.ID] = &GroupInfo{
+//						ID:    chat.ID,
+//						Name:  chat.Username,
+//						Title: chat.Title,
+//						Count: chat.ParticipantsCount,
+//						Hash:  chat.AccessHash,
+//					}
+//					x++
+//					fmt.Println("aaa", x, len(mp), len(rsp.Dialogs))
+//				}
+//			}
+//			if len(rsp.Dialogs) < limit {
+//				break
+//			}
+//		} else if rsp, ok := resp.(*tg.MessagesDialogsSlice); ok {
+//			for _, do := range rsp.Dialogs {
+//				offsetID = do.GetTopMessage()
+//				fmt.Println("id", offsetID)
+//				if dia, ok := do.(*tg.Dialog); ok {
+//					// 获取最后一个对话的 Peer
+//					switch peer := dia.Peer.(type) {
+//					case *tg.PeerUser:
+//						offsetPeer = &tg.InputPeerUser{UserID: peer.UserID}
+//					case *tg.PeerChat:
+//						offsetPeer = &tg.InputPeerChat{ChatID: peer.ChatID}
+//					case *tg.PeerChannel:
+//						offsetPeer = &tg.InputPeerChannel{ChannelID: peer.ChannelID}
+//					}
+//				}
+//			}
+//
+//			for _, msg := range rsp.Messages {
+//				switch a := msg.(type) {
+//				case *tg.Message:
+//					offsetDate = a.Date
+//				case *tg.MessageService:
+//					offsetDate = a.Date
+//				}
+//			}
+//
+//			for _, c := range rsp.Chats {
+//				if chat, ok := c.(*tg.Channel); ok {
+//					mp[chat.ID] = &GroupInfo{
+//						ID:    chat.ID,
+//						Name:  chat.Username,
+//						Title: chat.Title,
+//						Count: chat.ParticipantsCount,
+//						Hash:  chat.AccessHash,
+//					}
+//					x++
+//					fmt.Println("bbb", x, len(mp), len(rsp.Dialogs))
+//				}
+//			}
+//			if len(rsp.Dialogs) < limit {
+//				break
+//			}
+//		}
+//		time.Sleep(time.Second * 3)
+//	}
+//	return mp
+//}
 
 func getFileMd5(s []byte) string {
 	hasher := md5.New()

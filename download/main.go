@@ -146,46 +146,32 @@ func reverse(s []tg.MessageClass) {
 	}
 }
 
-func getDialogs() map[int64]*GroupInfo {
-	offset := 0
+func getDialogs(ctx context.Context, client *telegram.Client) map[int64]*GroupInfo {
+	offsetDate := 0
 	limit := 100
-	var mtries int
 	mp := make(map[int64]*GroupInfo)
 	for {
 		resp, err := client.API().MessagesGetDialogs(ctx, &tg.MessagesGetDialogsRequest{
-			OffsetID:   offset,
+			OffsetDate: offsetDate,
 			Limit:      limit,
 			OffsetPeer: &tg.InputPeerEmpty{},
 		})
-
 		if err != nil {
-			if mtries >= maxRetry {
-				logger.Errorf("遍历对话框【%s:%d】多次失败，结束", session, offset)
-				break
-			}
-			var rpcErr *tgerr.Error
-			if errors.As(err, &rpcErr) {
-				if rpcErr.Code == 420 {
-					logger.Warningf("遍历对话框需要等待|%d|waitting...", rpcErr.Argument)
-					time.Sleep(time.Second * time.Duration(rpcErr.Argument+2))
-					client.Self(ctx)
-				} else {
-					time.Sleep(time.Second * 1)
-					logger.Warningf("遍历对话框失败：%d|%s，重试中... (%d/%d)", rpcErr.Code, err.Error(), mtries+1, maxRetry)
-				}
-			} else {
-				time.Sleep(time.Second * 1)
-				logger.Warningf("遍历对话框失败：%s，重试中... (%d/%d)", err.Error(), mtries+1, maxRetry)
-			}
-			mtries++
-			continue
+			panic(fmt.Sprintf("遍历对话框失败: %s", err.Error()))
 		}
-		mtries = 0
-
 		if resp == nil {
 			break
 		}
 		if rsp, ok := resp.(*tg.MessagesDialogs); ok {
+			for _, msg := range rsp.Messages {
+				switch a := msg.(type) {
+				case *tg.Message:
+					offsetDate = a.Date
+				case *tg.MessageService:
+					offsetDate = a.Date
+				}
+			}
+
 			for _, c := range rsp.Chats {
 				if chat, ok := c.(*tg.Channel); ok {
 					mp[chat.ID] = &GroupInfo{
@@ -197,12 +183,35 @@ func getDialogs() map[int64]*GroupInfo {
 					}
 				}
 			}
-			if len(rsp.Chats) < limit {
+			if len(rsp.Dialogs) < limit {
+				break
+			}
+		} else if rsp, ok := resp.(*tg.MessagesDialogsSlice); ok {
+			for _, msg := range rsp.Messages {
+				switch a := msg.(type) {
+				case *tg.Message:
+					offsetDate = a.Date
+				case *tg.MessageService:
+					offsetDate = a.Date
+				}
+			}
+
+			for _, c := range rsp.Chats {
+				if chat, ok := c.(*tg.Channel); ok {
+					mp[chat.ID] = &GroupInfo{
+						ID:    chat.ID,
+						Name:  chat.Username,
+						Title: chat.Title,
+						Count: chat.ParticipantsCount,
+						Hash:  chat.AccessHash,
+					}
+				}
+			}
+			if len(rsp.Dialogs) < limit {
 				break
 			}
 		}
-		offset = offset + limit
-		time.Sleep(time.Millisecond * 800)
+		time.Sleep(time.Second * 5)
 	}
 	return mp
 }

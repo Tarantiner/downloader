@@ -146,7 +146,7 @@ func reverse(s []tg.MessageClass) {
 	}
 }
 
-func getDialogs(ctx context.Context, client *telegram.Client) map[int64]*GroupInfo {
+func getDialogs() map[int64]*GroupInfo {
 	offsetDate := 0
 	limit := 100
 	mp := make(map[int64]*GroupInfo)

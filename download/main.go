@@ -480,7 +480,21 @@ loop:
 									}
 								}
 								if !match {
-									logger.Infof("文件名或message not match：【%s】", fileName)
+									logger.Infof("文件not match：【%s】", fileName)
+									continue
+								}
+							}
+							if len(config.Download.FUnMatches) > 0 {
+								msg := strings.ToLower(tgMsg.Message)
+								var match bool
+								for s, _ := range config.Download.FUnMatches {
+									if strings.Contains(msg, s) || strings.Contains(fileName, s) {
+										match = true
+										logger.Infof("文件包含【%s】，不下载：【%s】", s, fileName)
+										break
+									}
+								}
+								if match {
 									continue
 								}
 							}

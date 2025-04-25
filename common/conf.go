@@ -18,7 +18,9 @@ type Config struct {
 		Dtypes               map[string]struct{}
 		EDtypes              map[string]struct{}
 		Matches              string `ini:"nameMatches"`
+		UnMatches            string `ini:"nameUnMatches"`
 		FMatches             map[string]struct{}
+		FUnMatches           map[string]struct{}
 		MinSize              int64 `ini:"minSize"`
 		MaxSize              int64 `ini:"maxSize"`
 		DownloadPhoto        bool  `ini:"downloadPhoto"`
@@ -64,6 +66,7 @@ func LoadConfig(config *Config, path string) error {
 	lis := strings.Split(config.Download.DownloadTypes, ",")
 	lis2 := strings.Split(config.Download.ExcludeDownloadTypes, ",")
 	lis3 := strings.Split(config.Download.Matches, ",")
+	lis4 := strings.Split(config.Download.UnMatches, ",")
 	mp1 := make(map[string]struct{})
 	for _, v := range lis {
 		if v == "" {
@@ -90,6 +93,15 @@ func LoadConfig(config *Config, path string) error {
 		mp3[v] = struct{}{}
 	}
 	config.Download.FMatches = mp3
+
+	mp4 := make(map[string]struct{})
+	for _, v := range lis4 {
+		if v == "" {
+			continue
+		}
+		mp4[v] = struct{}{}
+	}
+	config.Download.FUnMatches = mp4
 
 	// login
 	if config.Login.APIID == -1 {

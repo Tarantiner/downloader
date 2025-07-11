@@ -521,16 +521,26 @@ loop:
 							var lastSize int64
 							var isBlank bool
 							filePath := filepath.Join(groupDir, fileName)
-							ff, _ := os.Stat(filePath)
-							if ff != nil {
+							realPath := filePath
+							ff1, _ := os.Stat(filePath)
+							ff2, _ := os.Stat(filePath + ".tmp")
+							var ff os.FileInfo // 优先原文件，否则.tmp
+							if ff1 == nil {
+								ff = ff2
+							} else {
+								ff = ff1
+							}
+
+							if ff != nil { // 要么是原文件，要么是.tmp文件
 								lastSize = ff.Size()
 								if ff.Size() == docu.Size {
 									logger.Infof("同名文件相同大小已下载过，跳过：【%s】", filePath)
 									continue
 								} else if lastSize%4096 != 0 {
+									realPath = filePath + ".tmp"
 									lastSize = 0
 									logger.Infof("群频%d第%d消息，原文件已损坏，无法继续下载文件，开始重新下载：【%s】", gid, id, fileName)
-									err = os.Remove(filePath)
+									err = os.Remove(realPath)
 									if err != nil {
 										logger.Errorf("删除旧文件【%s】失败：%s，跳过", filePath, err.Error())
 										continue
@@ -539,12 +549,14 @@ loop:
 										logger.Infof("已删除损坏文件：【%s】", filePath)
 									}
 								} else {
+									realPath = filePath + ".tmp"
 									rate := float64(lastSize) / float64(docu.Size) * 100
 									logger.Infof("群频%d第%d消息，原文件进度%.2f%%，正在继续下载：【%s】", gid, id, rate, fileName)
 								}
 							} else {
 								// 不存在文件
 								isBlank = true
+								realPath = filePath + ".tmp"
 								logger.Infof("正在下载群频%d第%d消息文件：【%s】 大小：【%.2fMB】", gid, id, fileName, mSize)
 							}
 
@@ -563,6 +575,9 @@ loop:
 										logger.Warningf("下载片段需要等待|%d|跳过|waitting...", rpcErr.Argument)
 										time.Sleep(time.Second * time.Duration(rpcErr.Argument+2))
 										client.Self(ctx)
+									} else if rpcErr.Code == 400 && strings.Contains(err.Error(), "FILE_REFERENCE_EXPIRED") {
+										logger.Warningf("下载片段出现文件引用失效，跳过")
+										continue
 									} else {
 										time.Sleep(time.Second * 1)
 										logger.Warningf("下载片段失败，跳过：%s", err.Error())
@@ -585,9 +600,9 @@ loop:
 							if dm.DbIsFileExists(logger, fid) {
 								if !force {
 									logger.Infof("已在数据库找到文件记录，跳过：【%s】", filePath)
-									ff, _ := os.Stat(filePath)
+									ff, _ := os.Stat(realPath)
 									if ff != nil {
-										err = os.Remove(filePath)
+										err = os.Remove(realPath)
 										if err != nil {
 											logger.Warningf("删除重复旧文件【%s】失败：%s", filePath, err.Error())
 										} else {
@@ -603,7 +618,7 @@ loop:
 
 							// 正式开始下载
 							var isOK bool
-							of, err := os.OpenFile(filePath, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0644)
+							of, err := os.OpenFile(realPath, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0644)
 							if err != nil {
 								logger.Errorf("创建文件失败：【%s】|%v", filePath, err)
 								continue
@@ -628,6 +643,9 @@ loop:
 											logger.Warningf("下载资源需要等待|%d|waitting...", rpcErr.Argument)
 											time.Sleep(time.Second * time.Duration(rpcErr.Argument+2))
 											client.Self(ctx)
+										} else if rpcErr.Code == 400 && strings.Contains(err.Error(), "FILE_REFERENCE_EXPIRED") {
+											logger.Warningf("下载出现文件引用失效，跳过")
+											break
 										} else {
 											time.Sleep(time.Second * 1)
 											logger.Warningf("下载失败：%s，重试中... (%d/%d)", err.Error(), retries+1, maxRetry)
@@ -674,7 +692,7 @@ loop:
 							of.Close()
 							if isBlank && c == 0 {
 								// 新建的文件没有任何写入，失败了，则删除临时生成的文件
-								err = os.Remove(filePath)
+								err = os.Remove(realPath)
 								if err != nil {
 									logger.Warningf("删除临时文件【%s】失败：%s", filePath, err.Error())
 								} else {
@@ -683,6 +701,7 @@ loop:
 							}
 
 							if isOK && shouldInsert {
+								os.Rename(realPath, filePath)
 								file := dm.TgFile{
 									Fid:   fid,
 									Gid:   gid,

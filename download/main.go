@@ -22,9 +22,11 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 var (
@@ -43,6 +45,7 @@ var (
 	maxRetry             int
 	perSize              int
 	topicID              int
+	nonSenseNamePattern  = regexp.MustCompile(`^[a-zA-Z0-9月日 ()（）._-]+$`)
 )
 
 func init() {
@@ -221,6 +224,38 @@ func getFileMd5(s []byte) string {
 	hasher.Write(s)
 	md5Str2 := hex.EncodeToString(hasher.Sum(nil))
 	return md5Str2
+}
+
+func checkNonsenseName(name string) bool {
+	if nonSenseNamePattern.MatchString(name) {
+		return true
+	}
+	return false
+}
+
+func genNameByMessage(txt string) string {
+	// 定义非法字符集合
+	illegalChars := `<>:"/\|*?-# ` + "\n" + "\r"
+
+	return strings.Map(func(r rune) rune {
+		if strings.ContainsRune(illegalChars, r) {
+			return -1 // 删除字符
+		}
+		return r // 保留字符
+	}, txt)
+}
+
+func keepLastNRunes(s string, n int) string {
+	// 将字符串转换为rune切片
+	runes := []rune(s)
+
+	// 如果字符串长度小于等于n，直接返回原字符串
+	if len(runes) <= n {
+		return s
+	}
+
+	// 返回最后n个rune组成的字符串
+	return string(runes[len(runes)-n:])
 }
 
 func getGroupInfo() *tg.InputChannel {
@@ -445,14 +480,35 @@ loop:
 								if len(xlis) >= 2 {
 									fType = xlis[len(xlis)-1]
 									tgFileName = fType
-									fileName = fmt.Sprintf("%d---%d---.%s", gid, id, xlis[len(xlis)-1])
+									if tgMsg.Message != "" {
+										genName := keepLastNRunes(genNameByMessage(tgMsg.Message), 148-utf8.RuneCountInString(fmt.Sprintf("%d---%d---.%s", gid, id, fType)))
+										fileName = fmt.Sprintf("%d---%d---%s.%s", gid, id, genName, fType)
+									} else {
+										fileName = fmt.Sprintf("%d---%d---.%s", gid, id, fType)
+									}
 								} else {
-									fileName = fmt.Sprintf("%d---%d---.unknown", gid, id)
+									if tgMsg.Message != "" {
+										genName := keepLastNRunes(genNameByMessage(tgMsg.Message), 148-utf8.RuneCountInString(fmt.Sprintf("%d---%d---.unknown", gid, id)))
+										fileName = fmt.Sprintf("%d---%d---%s.unknown", gid, id, genName)
+									} else {
+										fileName = fmt.Sprintf("%d---%d---.unknown", gid, id)
+									}
 								}
 
 							} else {
 								tgFileName = fileName
-								fileName = fmt.Sprintf("%d---%d---%s", gid, id, fileName)
+								fType := filepath.Ext(fileName)
+								if checkNonsenseName(strings.TrimSuffix(fileName, fType)) && tgMsg.Message != "" {
+									genName := genNameByMessage(tgMsg.Message)
+									if genName == "" {
+										fileName = fmt.Sprintf("%d---%d---%s", gid, id, fileName)
+									} else {
+										genName := keepLastNRunes(genNameByMessage(tgMsg.Message), 148-utf8.RuneCountInString(fmt.Sprintf("%d---%d---%s", gid, id, fType)))
+										fileName = fmt.Sprintf("%d---%d---%s%s", gid, id, genName, fType)
+									}
+								} else {
+									fileName = fmt.Sprintf("%d---%d---%s", gid, id, fileName)
+								}
 							}
 
 							// 文件大小过滤
@@ -471,10 +527,9 @@ loop:
 
 							// 文件名过滤
 							if len(config.Download.FMatches) > 0 {
-								msg := strings.ToLower(tgMsg.Message)
 								var match bool
 								for s, _ := range config.Download.FMatches {
-									if strings.Contains(msg, s) || strings.Contains(fileName, s) {
+									if strings.Contains(strings.ToLower(tgMsg.Message), s) || strings.Contains(fileName, s) {
 										match = true
 										break
 									}
@@ -485,10 +540,9 @@ loop:
 								}
 							}
 							if len(config.Download.FUnMatches) > 0 {
-								msg := strings.ToLower(tgMsg.Message)
 								var match bool
 								for s, _ := range config.Download.FUnMatches {
-									if strings.Contains(msg, s) || strings.Contains(fileName, s) {
+									if strings.Contains(strings.ToLower(tgMsg.Message), s) || strings.Contains(fileName, s) {
 										match = true
 										logger.Infof("文件包含【%s】，不下载：【%s】", s, fileName)
 										break
